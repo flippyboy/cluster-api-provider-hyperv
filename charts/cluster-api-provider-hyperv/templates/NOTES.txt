@@ -1,0 +1,5 @@
+Hyper-V infrastructure provider installed in hyperv-system.
+Manager image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+
+clusterctl name: hyperv
+Install with clusterctl or this chart, not both. They create the same objects.

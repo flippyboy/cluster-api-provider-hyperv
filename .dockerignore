@@ -1,0 +1,9 @@
+.git
+.github
+/bin
+/out
+/hack/tools
+/charts
+/templates
+**/*_test.go
+*.md

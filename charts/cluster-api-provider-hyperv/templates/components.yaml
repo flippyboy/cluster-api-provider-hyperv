@@ -1,0 +1,847 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    control-plane: controller-manager
+  name: hyperv-system
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-hyperv
+    cluster.x-k8s.io/v1beta2: v1alpha1
+  name: hypervclusters.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: HyperVCluster
+    listKind: HyperVClusterList
+    plural: hypervclusters
+    shortNames:
+    - hvcl
+    singular: hypervcluster
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.host.address
+      name: Host
+      type: string
+    - jsonPath: .spec.host.transport
+      name: Transport
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: HyperVCluster is the Schema for hypervclusters API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: HyperVClusterSpec defines the desired state of HyperVCluster.
+            properties:
+              credentialsSecretRef:
+                description: |-
+                  credentialsSecretRef names a Secret in the same namespace.
+                  SSH keys: username, ssh-privatekey, and ssh-known-hosts unless host
+                  key verification is skipped.
+                  WinRM keys: username and password. NTLM is the authentication method.
+                  Optional WinRM key: ca-cert, a PEM bundle for the HTTPS listener.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              host:
+                description: host is the Hyper-V host that will run every machine
+                  in this cluster.
+                properties:
+                  address:
+                    description: address is the host name or IP of the Hyper-V host.
+                    maxLength: 512
+                    minLength: 1
+                    type: string
+                  insecureSkipHostKeyVerification:
+                    description: insecureSkipHostKeyVerification skips SSH host key
+                      checks.
+                    type: boolean
+                  insecureSkipTLSVerify:
+                    description: insecureSkipTLSVerify skips TLS verification for
+                      WinRM HTTPS.
+                    type: boolean
+                  port:
+                    description: |-
+                      port is the TCP port. When unset, SSH uses 22, WinRM HTTP uses 5985,
+                      and WinRM HTTPS uses 5986.
+                    format: int32
+                    maximum: 65535
+                    minimum: 0
+                    type: integer
+                  tlsServerName:
+                    description: |-
+                      tlsServerName overrides the name checked against the WinRM server
+                      certificate. Set this when address is an IP and the certificate is
+                      issued to a DNS name.
+                    maxLength: 512
+                    type: string
+                  transport:
+                    default: SSH
+                    description: transport selects SSH or WinRM. Defaults to SSH.
+                    enum:
+                    - SSH
+                    - WinRM
+                    type: string
+                  winRMScheme:
+                    default: HTTPS
+                    description: |-
+                      winRMScheme selects the WinRM listener when transport is WinRM.
+                      Defaults to HTTPS.
+                    enum:
+                    - HTTP
+                    - HTTPS
+                    type: string
+                required:
+                - address
+                type: object
+              imagePath:
+                description: |-
+                  imagePath is the golden VHDX on the host. Differencing disks use it as
+                  their parent, so it must stay immutable.
+                maxLength: 1024
+                minLength: 1
+                type: string
+              kubeVIP:
+                description: |-
+                  kubeVIP installs kube-vip on control plane machines. The virtual IP is
+                  Cluster.spec.controlPlaneEndpoint. Leave this unset when that endpoint
+                  is a DHCP reservation or another load balancer.
+                properties:
+                  enabled:
+                    description: |-
+                      enabled adds the kube-vip static pod to control plane cloud-init.
+                      Workers are left unchanged. The mode is ARP on the guest NIC.
+                    type: boolean
+                  image:
+                    default: ghcr.io/kube-vip/kube-vip:v1.3.0
+                    description: image overrides the kube-vip container image.
+                    maxLength: 512
+                    minLength: 1
+                    type: string
+                  interface:
+                    default: eth0
+                    description: |-
+                      interface is the guest interface that holds the virtual IP.
+                      The NoCloud network-config renames the matched NIC to this name.
+                    maxLength: 15
+                    minLength: 1
+                    pattern: ^[A-Za-z][A-Za-z0-9_-]{0,14}$
+                    type: string
+                type: object
+              virtualSwitch:
+                description: |-
+                  virtualSwitch is the name of an external virtual switch that already
+                  exists on the host.
+                maxLength: 256
+                minLength: 1
+                type: string
+              vmPath:
+                description: |-
+                  vmPath is the directory under which each VM folder is created. When
+                  empty, the host default virtual machine path is used.
+                maxLength: 1024
+                type: string
+            required:
+            - credentialsSecretRef
+            - host
+            - imagePath
+            - virtualSwitch
+            type: object
+          status:
+            description: HyperVClusterStatus defines the observed state of HyperVCluster.
+            properties:
+              conditions:
+                description: |-
+                  conditions represent the observations of the cluster.
+                  The Ready condition is mirrored onto Cluster InfrastructureReady.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 32
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              initialization:
+                description: initialization reports contract provisioning state.
+                minProperties: 1
+                properties:
+                  provisioned:
+                    description: provisioned is true when machines may be created.
+                      It is set once.
+                    type: boolean
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-hyperv
+    cluster.x-k8s.io/v1beta2: v1alpha1
+  name: hypervmachines.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: HyperVMachine
+    listKind: HyperVMachineList
+    plural: hypervmachines
+    shortNames:
+    - hvm
+    singular: hypervmachine
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.providerID
+      name: ProviderID
+      type: string
+    - jsonPath: .status.vmName
+      name: VM
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: HyperVMachine is the Schema for hypervmachines API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: HyperVMachineSpec defines the desired state of HyperVMachine.
+            properties:
+              disk:
+                description: disk is the system disk. An empty clone mode means Differencing.
+                properties:
+                  cloneMode:
+                    default: Differencing
+                    description: cloneMode defaults to Differencing.
+                    enum:
+                    - Differencing
+                    - Copy
+                    type: string
+                  imagePath:
+                    description: imagePath overrides HyperVCluster.spec.imagePath
+                      for this machine.
+                    maxLength: 1024
+                    type: string
+                  sizeGiB:
+                    description: |-
+                      sizeGiB grows the disk with Resize-VHD when it is larger than the image.
+                      Zero leaves the cloned size unchanged.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+              memoryMiB:
+                default: 2048
+                description: memoryMiB is static memory in MiB. Dynamic Memory is
+                  not used. Defaults to 2048.
+                format: int32
+                minimum: 512
+                type: integer
+              providerID:
+                description: providerID is the Node provider ID, hyperv://<vm-guid>.
+                  The controller sets it.
+                maxLength: 512
+                minLength: 1
+                type: string
+              vCPUs:
+                default: 2
+                description: vCPUs is the number of virtual processors. Defaults to
+                  2.
+                format: int32
+                maximum: 240
+                minimum: 1
+                type: integer
+              virtualSwitch:
+                description: virtualSwitch overrides HyperVCluster.spec.virtualSwitch
+                  for this machine.
+                maxLength: 256
+                type: string
+            type: object
+          status:
+            description: HyperVMachineStatus defines the observed state of HyperVMachine.
+            properties:
+              addresses:
+                description: addresses are the addresses reported by Hyper-V integration
+                  services.
+                items:
+                  description: MachineAddress contains information for the node's
+                    address.
+                  properties:
+                    address:
+                      description: address is the machine address.
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                    type:
+                      description: type is the machine address type, one of Hostname,
+                        ExternalIP, InternalIP, ExternalDNS or InternalDNS.
+                      enum:
+                      - Hostname
+                      - ExternalIP
+                      - InternalIP
+                      - ExternalDNS
+                      - InternalDNS
+                      type: string
+                  required:
+                  - address
+                  - type
+                  type: object
+                maxItems: 256
+                type: array
+                x-kubernetes-list-type: atomic
+              conditions:
+                description: |-
+                  conditions represent the observations of the machine.
+                  The Ready condition is mirrored onto Machine InfrastructureReady.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 32
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              initialization:
+                description: initialization reports contract provisioning state.
+                minProperties: 1
+                properties:
+                  provisioned:
+                    description: |-
+                      provisioned is true when the VM is running, the provider ID is set,
+                      and an IPv4 address is known. It is set once.
+                    type: boolean
+                type: object
+              macAddress:
+                description: macAddress is the NIC MAC address, lowercase, colon separated.
+                type: string
+              vmID:
+                description: vmID is the Hyper-V VM GUID.
+                type: string
+              vmName:
+                description: vmName is the name of the VM on the host.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-hyperv
+    cluster.x-k8s.io/v1beta2: v1alpha1
+  name: hypervmachinetemplates.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: HyperVMachineTemplate
+    listKind: HyperVMachineTemplateList
+    plural: hypervmachinetemplates
+    shortNames:
+    - hvmt
+    singular: hypervmachinetemplate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: HyperVMachineTemplate is the Schema for hypervmachinetemplates
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: HyperVMachineTemplateSpec defines the desired state of HyperVMachineTemplate.
+            properties:
+              template:
+                description: template is the HyperVMachine spec applied to each machine.
+                minProperties: 1
+                properties:
+                  metadata:
+                    description: metadata is the standard object metadata.
+                    minProperties: 1
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          annotations is an unstructured key value map stored with a resource that may be
+                          set by external tools to store and retrieve arbitrary metadata. They are not
+                          queryable and should be preserved when modifying objects.
+                          More info: http://kubernetes.io/docs/user-guide/annotations
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          labels is a map of string keys and values that can be used to organize and categorize
+                          (scope and select) objects. May match selectors of replication controllers
+                          and services.
+                          More info: http://kubernetes.io/docs/user-guide/labels
+                        type: object
+                    type: object
+                  spec:
+                    description: spec is the desired state of the HyperVMachine.
+                    properties:
+                      disk:
+                        description: disk is the system disk. An empty clone mode
+                          means Differencing.
+                        properties:
+                          cloneMode:
+                            default: Differencing
+                            description: cloneMode defaults to Differencing.
+                            enum:
+                            - Differencing
+                            - Copy
+                            type: string
+                          imagePath:
+                            description: imagePath overrides HyperVCluster.spec.imagePath
+                              for this machine.
+                            maxLength: 1024
+                            type: string
+                          sizeGiB:
+                            description: |-
+                              sizeGiB grows the disk with Resize-VHD when it is larger than the image.
+                              Zero leaves the cloned size unchanged.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        type: object
+                      memoryMiB:
+                        default: 2048
+                        description: memoryMiB is static memory in MiB. Dynamic Memory
+                          is not used. Defaults to 2048.
+                        format: int32
+                        minimum: 512
+                        type: integer
+                      providerID:
+                        description: providerID is the Node provider ID, hyperv://<vm-guid>.
+                          The controller sets it.
+                        maxLength: 512
+                        minLength: 1
+                        type: string
+                      vCPUs:
+                        default: 2
+                        description: vCPUs is the number of virtual processors. Defaults
+                          to 2.
+                        format: int32
+                        maximum: 240
+                        minimum: 1
+                        type: integer
+                      virtualSwitch:
+                        description: virtualSwitch overrides HyperVCluster.spec.virtualSwitch
+                          for this machine.
+                        maxLength: 256
+                        type: string
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hyperv-controller-manager
+  namespace: hyperv-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hyperv-leader-election-role
+  namespace: hyperv-system
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hyperv-manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - clusters
+  - machines
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - hypervclusters
+  - hypervmachines
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - hypervclusters/finalizers
+  - hypervmachines/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - hypervclusters/status
+  - hypervmachines/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - hypervmachinetemplates
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hyperv-leader-election-rolebinding
+  namespace: hyperv-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hyperv-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: hyperv-controller-manager
+  namespace: hyperv-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hyperv-manager-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hyperv-manager-role
+subjects:
+- kind: ServiceAccount
+  name: hyperv-controller-manager
+  namespace: hyperv-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    control-plane: controller-manager
+  name: hyperv-controller-manager
+  namespace: hyperv-system
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  template:
+    metadata:
+      labels:
+        control-plane: controller-manager
+    spec:
+      containers:
+      - args:
+{{- if .Values.leaderElection }}
+        - --leader-elect
+{{- end }}
+        - --metrics-bind-address=:8080
+        - --health-probe-bind-address=:8081
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        name: manager
+        ports:
+        - containerPort: 8081
+          name: health
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+        volumeMounts:
+        - mountPath: /tmp
+          name: tmp
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: hyperv-controller-manager
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - emptyDir: {}
+        name: tmp

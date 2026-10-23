@@ -1,0 +1,8 @@
+image:
+  repository: ghcr.io/flippyboy/cluster-api-provider-hyperv
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+leaderElection: true

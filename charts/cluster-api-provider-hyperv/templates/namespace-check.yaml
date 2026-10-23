@@ -1,0 +1,3 @@
+{{- if ne .Release.Namespace "hyperv-system" }}
+{{- fail "cluster-api-provider-hyperv must be installed in the hyperv-system namespace" }}
+{{- end }}

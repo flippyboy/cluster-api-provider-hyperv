@@ -1,0 +1,137 @@
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: ${CLUSTER_NAME}
+  labels:
+    cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+    services:
+      cidrBlocks:
+      - 10.96.0.0/12
+  controlPlaneEndpoint:
+    host: ${CONTROL_PLANE_ENDPOINT_IP}
+    port: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: HyperVCluster
+    name: ${CLUSTER_NAME}
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: ${CLUSTER_NAME}-control-plane
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: HyperVCluster
+metadata:
+  name: ${CLUSTER_NAME}
+  labels:
+    cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+spec:
+  host:
+    address: ${HYPERV_HOST}
+    port: ${HYPERV_PORT:=0}
+    transport: ${HYPERV_TRANSPORT:=SSH}
+    winRMScheme: ${HYPERV_WINRM_SCHEME:=HTTPS}
+  credentialsSecretRef:
+    name: ${HYPERV_CREDENTIALS_SECRET}
+  virtualSwitch: ${HYPERV_VIRTUAL_SWITCH}
+  imagePath: ${HYPERV_IMAGE_PATH}
+  kubeVIP:
+    enabled: ${HYPERV_KUBE_VIP:=false}
+    interface: ${HYPERV_KUBE_VIP_INTERFACE:=eth0}
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  labels:
+    cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT:=1}
+  version: ${KUBERNETES_VERSION}
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: HyperVMachineTemplate
+        name: ${CLUSTER_NAME}-control-plane
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      controlPlaneEndpoint: ${CONTROL_PLANE_ENDPOINT_IP}:${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+    initConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: HyperVMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  labels:
+    cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+spec:
+  template:
+    spec:
+      vCPUs: ${HYPERV_VCPUS:=2}
+      memoryMiB: ${HYPERV_MEMORY_MIB:=2048}
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+  labels:
+    cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: ${WORKER_MACHINE_COUNT:=1}
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      version: ${KUBERNETES_VERSION}
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: ${CLUSTER_NAME}-md-0
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: HyperVMachineTemplate
+        name: ${CLUSTER_NAME}-md-0
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: HyperVMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+  labels:
+    cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+spec:
+  template:
+    spec:
+      vCPUs: ${HYPERV_VCPUS:=2}
+      memoryMiB: ${HYPERV_MEMORY_MIB:=2048}
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+  labels:
+    cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+spec:
+  template:
+    spec:
+      format: cloud-config
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: unix:///var/run/containerd/containerd.sock

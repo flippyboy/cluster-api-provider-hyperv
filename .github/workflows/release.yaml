@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        run: make test
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+      - name: Build clusterctl assets and Helm chart
+        env:
+          TAG: ${{ github.ref_name }}
+        run: make release
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image tags
+        id: tags
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          tags="ghcr.io/flippyboy/cluster-api-provider-hyperv:${TAG}"
+          if [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            tags="${tags},ghcr.io/flippyboy/cluster-api-provider-hyperv:latest"
+          fi
+          echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
+      - name: Build and push manager image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/flippyboy/cluster-api-provider-hyperv
+            org.opencontainers.image.licenses=Apache-2.0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          chart_version="${TAG#v}"
+          {
+            echo "Cluster API infrastructure provider for Hyper-V ${TAG}."
+            echo
+            echo "clusterctl assets are infrastructure-components.yaml, metadata.yaml, and cluster-template.yaml."
+            echo "The Helm chart is cluster-api-provider-hyperv-${chart_version}.tgz."
+            echo "The manager image is ghcr.io/flippyboy/cluster-api-provider-hyperv:${TAG}."
+          } > out/release-notes.md
+          args=()
+          if [[ "${TAG}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${TAG}" "${args[@]}" \
+            --title "${TAG}" \
+            --notes-file out/release-notes.md \
+            out/infrastructure-components.yaml \
+            out/metadata.yaml \
+            out/cluster-template.yaml \
+            "out/infrastructure-hyperv-${TAG}-components.yaml" \
+            "out/infrastructure-hyperv-${TAG}-metadata.yaml" \
+            out/cluster-api-provider-hyperv-*.tgz

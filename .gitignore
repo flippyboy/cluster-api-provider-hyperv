@@ -1,0 +1,11 @@
+/bin/
+/out/
+/hack/tools/
+/manager
+*.exe
+*.test
+*.out
+*.tgz
+cover.out
+.idea/
+.vscode/

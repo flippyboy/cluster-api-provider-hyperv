@@ -1,0 +1,16 @@
+apiVersion: v2
+name: cluster-api-provider-hyperv
+description: Cluster API infrastructure provider for a single Hyper-V host
+type: application
+version: 0.1.0
+appVersion: v0.1.0
+home: https://github.com/flippyboy/cluster-api-provider-hyperv
+sources:
+  - https://github.com/flippyboy/cluster-api-provider-hyperv
+keywords:
+  - cluster-api
+  - infrastructure
+  - hyperv
+maintainers:
+  - name: flippyboy
+    url: https://github.com/flippyboy

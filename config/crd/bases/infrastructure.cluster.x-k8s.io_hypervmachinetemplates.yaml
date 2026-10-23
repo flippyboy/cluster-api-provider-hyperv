@@ -1,0 +1,141 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: hypervmachinetemplates.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: HyperVMachineTemplate
+    listKind: HyperVMachineTemplateList
+    plural: hypervmachinetemplates
+    shortNames:
+    - hvmt
+    singular: hypervmachinetemplate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: HyperVMachineTemplate is the Schema for hypervmachinetemplates
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: HyperVMachineTemplateSpec defines the desired state of HyperVMachineTemplate.
+            properties:
+              template:
+                description: template is the HyperVMachine spec applied to each machine.
+                minProperties: 1
+                properties:
+                  metadata:
+                    description: metadata is the standard object metadata.
+                    minProperties: 1
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          annotations is an unstructured key value map stored with a resource that may be
+                          set by external tools to store and retrieve arbitrary metadata. They are not
+                          queryable and should be preserved when modifying objects.
+                          More info: http://kubernetes.io/docs/user-guide/annotations
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          labels is a map of string keys and values that can be used to organize and categorize
+                          (scope and select) objects. May match selectors of replication controllers
+                          and services.
+                          More info: http://kubernetes.io/docs/user-guide/labels
+                        type: object
+                    type: object
+                  spec:
+                    description: spec is the desired state of the HyperVMachine.
+                    properties:
+                      disk:
+                        description: disk is the system disk. An empty clone mode
+                          means Differencing.
+                        properties:
+                          cloneMode:
+                            default: Differencing
+                            description: cloneMode defaults to Differencing.
+                            enum:
+                            - Differencing
+                            - Copy
+                            type: string
+                          imagePath:
+                            description: imagePath overrides HyperVCluster.spec.imagePath
+                              for this machine.
+                            maxLength: 1024
+                            type: string
+                          sizeGiB:
+                            description: |-
+                              sizeGiB grows the disk with Resize-VHD when it is larger than the image.
+                              Zero leaves the cloned size unchanged.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        type: object
+                      memoryMiB:
+                        default: 2048
+                        description: memoryMiB is static memory in MiB. Dynamic Memory
+                          is not used. Defaults to 2048.
+                        format: int32
+                        minimum: 512
+                        type: integer
+                      providerID:
+                        description: providerID is the Node provider ID, hyperv://<vm-guid>.
+                          The controller sets it.
+                        maxLength: 512
+                        minLength: 1
+                        type: string
+                      vCPUs:
+                        default: 2
+                        description: vCPUs is the number of virtual processors. Defaults
+                          to 2.
+                        format: int32
+                        maximum: 240
+                        minimum: 1
+                        type: integer
+                      virtualSwitch:
+                        description: virtualSwitch overrides HyperVCluster.spec.virtualSwitch
+                          for this machine.
+                        maxLength: 256
+                        type: string
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}
