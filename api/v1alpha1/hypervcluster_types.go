@@ -130,6 +130,13 @@ type HyperVClusterSpec struct {
 	// +kubebuilder:validation:MaxLength=256
 	VirtualSwitch string `json:"virtualSwitch"`
 
+	// vlanID is the access VLAN for every machine NIC on virtualSwitch.
+	// 0 leaves the adapter untagged. A machine can override this with its own vlanID.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4094
+	VLANID int32 `json:"vlanID,omitempty"`
+
 	// imagePath is the golden VHDX on the host. Differencing disks use it as
 	// their parent, so it must stay immutable.
 	// +required

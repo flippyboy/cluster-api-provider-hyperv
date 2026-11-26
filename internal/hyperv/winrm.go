@@ -3,7 +3,11 @@ package hyperv
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/masterzen/winrm"
@@ -87,16 +91,92 @@ func newWinRMClient(cfg HostConfig) (*winrm.Client, error) {
 }
 
 func (s *winrmSession) Exec(ctx context.Context, command string, stdin []byte) ([]byte, []byte, int, error) {
+	if len(stdin) == 0 {
+		return s.run(ctx, command)
+	}
+	// The WinRM cmd shell does not signal stdin EOF. taliesins/hyperv uploads
+	// the script and runs it with no stdin. Do the same.
+	return s.runUploadedScript(ctx, scriptFile(stdinPayload(stdin)))
+}
+
+func (s *winrmSession) run(ctx context.Context, command string) ([]byte, []byte, int, error) {
 	var stdout, stderr bytes.Buffer
-	var reader *bytes.Reader
-	if stdin != nil {
-		reader = bytes.NewReader(stdin)
-	}
-	code, err := s.client.RunWithContextWithInput(ctx, command, &stdout, &stderr, reader)
+	code, err := s.client.RunWithContextWithInput(ctx, command, &stdout, &stderr, nil)
+	return stdout.Bytes(), stderr.Bytes(), code, err
+}
+
+// winRMChunkChars keeps each cmd.exe command under the 8191 character limit.
+const winRMChunkChars = 7000
+
+func (s *winrmSession) runUploadedScript(ctx context.Context, script string) ([]byte, []byte, int, error) {
+	tempOut, tempErr, code, err := s.run(ctx, `powershell.exe -NoProfile -NonInteractive -Command "Write-Output $env:TEMP"`)
 	if err != nil {
-		return stdout.Bytes(), stderr.Bytes(), code, err
+		return tempOut, tempErr, code, fmt.Errorf("resolve temp: %w", err)
 	}
-	return stdout.Bytes(), stderr.Bytes(), code, nil
+	if code != 0 {
+		return tempOut, tempErr, code, fmt.Errorf("resolve temp exited %d: %s", code, clip(append(tempErr, tempOut...)))
+	}
+	temp := lastNonEmptyLine(tempOut)
+	if !validWinPath(temp) {
+		return tempOut, tempErr, code, fmt.Errorf("resolve temp returned %q", temp)
+	}
+
+	var id [6]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return nil, nil, 0, err
+	}
+	tag := hex.EncodeToString(id[:])
+	b64Path := temp + `\caphv-` + tag + `.b64`
+	ps1Path := temp + `\caphv-` + tag + `.ps1`
+	defer func() {
+		cleanCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, _, _, _ = s.run(cleanCtx, `powershell.exe -NoProfile -NonInteractive -Command "Remove-Item -LiteralPath @('`+psQuote(b64Path)+`','`+psQuote(ps1Path)+`') -Force -ErrorAction SilentlyContinue"`)
+	}()
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(script))
+	for i := 0; i < len(encoded); i += winRMChunkChars {
+		j := i + winRMChunkChars
+		if j > len(encoded) {
+			j = len(encoded)
+		}
+		cmd := `powershell.exe -NoProfile -NonInteractive -Command "[IO.File]::AppendAllText('` + psQuote(b64Path) + `','` + encoded[i:j] + `'+[char]10)"`
+		if len(cmd) > 8000 {
+			return nil, nil, 0, fmt.Errorf("winrm append command is %d characters", len(cmd))
+		}
+		stdout, stderr, code, err := s.run(ctx, cmd)
+		if err != nil {
+			return stdout, stderr, code, fmt.Errorf("upload script: %w", err)
+		}
+		if code != 0 {
+			return stdout, stderr, code, fmt.Errorf("upload script exited %d: %s", code, clip(append(stderr, stdout...)))
+		}
+	}
+
+	exec := `powershell.exe -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; $in='` + psQuote(b64Path) + `'; $out='` + psQuote(ps1Path) + `'; $r=[IO.File]::OpenText($in); $w=[IO.File]::Create($out); try { while($null -ne ($line=$r.ReadLine())) { if($line -eq ''){continue}; $b=[Convert]::FromBase64String($line); $w.Write($b,0,$b.Length) } } finally { $w.Dispose(); $r.Dispose() }; & $out"`
+	return s.run(ctx, exec)
+}
+
+func psQuote(path string) string {
+	return strings.ReplaceAll(path, `'`, `''`)
+}
+
+func lastNonEmptyLine(b []byte) string {
+	lines := strings.FieldsFunc(string(b), func(r rune) bool { return r == '\n' || r == '\r' })
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func validWinPath(path string) bool {
+	if len(path) < 3 || path[1] != ':' || (path[2] != '\\' && path[2] != '/') {
+		return false
+	}
+	return !strings.ContainsAny(path, "'\n\r")
 }
 
 func (s *winrmSession) Upload(context.Context, string, []byte) error {

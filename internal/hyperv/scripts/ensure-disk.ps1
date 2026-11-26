@@ -15,8 +15,22 @@ if (-not (Test-Path -LiteralPath $disk)) {
     New-VHD -Path $disk -ParentPath $params.imagePath -Differencing | Out-Null
   }
 }
-$attached = @(Get-VMHardDiskDrive -VMName $params.vmName | Where-Object { $_.Path -eq $disk })
-if ($attached.Count -eq 0) {
+# An automatic checkpoint attaches the avhdx child, not disk.vhdx.
+# Adding disk.vhdx again fails because the parent is already open.
+$attached = $false
+foreach ($drive in @(Get-VMHardDiskDrive -VMName $params.vmName)) {
+  $path = [string]$drive.Path
+  $guard = 0
+  while ($path -and $guard -lt 8) {
+    if ($path -eq $disk) { $attached = $true; break }
+    $vhd = Get-VHD -Path $path -ErrorAction SilentlyContinue
+    if (-not $vhd) { break }
+    $path = [string]$vhd.ParentPath
+    $guard++
+  }
+  if ($attached) { break }
+}
+if (-not $attached) {
   Add-VMHardDiskDrive -VMName $params.vmName -Path $disk
 }
 if ($null -ne $params.sizeGiB -and [int64]$params.sizeGiB -gt 0) {

@@ -11,7 +11,9 @@ import (
 	"github.com/diskfs/go-diskfs/filesystem/iso9660"
 )
 
-const isoSize int64 = 10 * 1024 * 1024
+// isoSize is the whole file WinRM uploads. The three NoCloud files are small,
+// and a 10MiB preallocation made that upload thousands of round trips.
+const isoSize int64 = 512 * 1024
 
 // MetaData is the NoCloud meta-data file.
 func MetaData(instanceID, hostname string) []byte {

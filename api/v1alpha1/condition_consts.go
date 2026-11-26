@@ -18,6 +18,10 @@ const (
 	WaitingForClusterInfrastructureReason = "WaitingForClusterInfrastructure"
 	// WaitingForBootstrapDataReason is set until the bootstrap Secret exists.
 	WaitingForBootstrapDataReason = "WaitingForBootstrapData"
+	// WaitingForIPAddressClaimReason is set until every IPAddressClaim has an IPAddress.
+	WaitingForIPAddressClaimReason = "WaitingForIPAddressClaim"
+	// IPAddressInvalidReason is set when an allocated IPAddress cannot be used.
+	IPAddressInvalidReason = "IPAddressInvalid"
 	// WaitingForIPReason is set until integration services report an IPv4 address.
 	WaitingForIPReason = "WaitingForIP"
 	// CredentialsInvalidReason is set when the Secret is missing or incomplete.

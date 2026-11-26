@@ -105,6 +105,19 @@ func TestInjectCreatesNodeRegistration(t *testing.T) {
 	}
 }
 
+func TestInjectAcceptsJinjaCloudConfigHeader(t *testing.T) {
+	in := []byte("## template: jinja\n#cloud-config\nwrite_files:\n- path: /run/kubeadm/kubeadm.yaml\n  content: |\n    apiVersion: kubeadm.k8s.io/v1beta3\n    kind: InitConfiguration\n")
+	out, err := InjectProviderID(in, providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	init := docByKind(t, fileContent(t, out, "/run/kubeadm/kubeadm.yaml"), "InitConfiguration")
+	args := mapChild(t, mapChild(t, init, "nodeRegistration"), "kubeletExtraArgs")
+	if mapValue(args, "provider-id") != providerID {
+		t.Fatal("provider-id missing")
+	}
+}
+
 func TestInjectRejectsUnknownDocuments(t *testing.T) {
 	cases := [][]byte{
 		[]byte("not cloud config\n"),

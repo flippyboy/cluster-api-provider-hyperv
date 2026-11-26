@@ -78,6 +78,36 @@ spec:
                   spec:
                     description: spec is the desired state of the HyperVMachine.
                     properties:
+                      dataDisks:
+                        description: |-
+                          dataDisks are extra blank dynamically expanding VHDX files.
+                          The system disk stays spec.disk. Disks are created when missing,
+                          grown when sizeGiB is larger, and never shrunk or removed.
+                        items:
+                          description: DataDiskSpec is one extra blank disk on a VM.
+                          properties:
+                            name:
+                              description: name is the disk name. The VHDX file is
+                                data-<name>.vhdx in the VM directory.
+                              maxLength: 32
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                              type: string
+                            sizeGiB:
+                              description: sizeGiB is the virtual size in GiB.
+                              format: int32
+                              maximum: 65536
+                              minimum: 1
+                              type: integer
+                          required:
+                          - name
+                          - sizeGiB
+                          type: object
+                        maxItems: 16
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       disk:
                         description: disk is the system disk. An empty clone mode
                           means Differencing.
@@ -109,6 +139,74 @@ spec:
                         format: int32
                         minimum: 512
                         type: integer
+                      network:
+                        description: network configures the guest NIC. When it is
+                          empty the guest uses DHCP.
+                        properties:
+                          addressesFromPools:
+                            description: |-
+                              addressesFromPools claims one address from each pool through the
+                              Cluster API IPAM contract. The NIC is then configured statically with
+                              those addresses and the gateway each IPAddress reports, and DHCP is off.
+                              The claims are released after the VM is deleted.
+                            items:
+                              description: IPPoolReference points at an IPAM pool,
+                                for example an InClusterIPPool.
+                              properties:
+                                apiGroup:
+                                  description: apiGroup is the pool API group, for
+                                    example ipam.cluster.x-k8s.io.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                kind:
+                                  description: kind is the pool kind, for example
+                                    InClusterIPPool or GlobalInClusterIPPool.
+                                  maxLength: 63
+                                  minLength: 1
+                                  type: string
+                                name:
+                                  description: name is the pool name. A namespaced
+                                    pool must be in the machine's namespace.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - apiGroup
+                              - kind
+                              - name
+                              type: object
+                            maxItems: 4
+                            type: array
+                            x-kubernetes-list-type: atomic
+                          nameservers:
+                            description: nameservers are the DNS servers for a static
+                              configuration.
+                            items:
+                              maxLength: 45
+                              type: string
+                            maxItems: 8
+                            type: array
+                            x-kubernetes-list-type: atomic
+                            x-kubernetes-validations:
+                            - message: each nameserver must be an IP address
+                              rule: self.all(x, isIP(x))
+                          searchDomains:
+                            description: searchDomains are the DNS search domains
+                              for a static configuration.
+                            items:
+                              maxLength: 253
+                              type: string
+                            maxItems: 8
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        type: object
+                        x-kubernetes-validations:
+                        - message: nameservers is required when addressesFromPools
+                            is set, because DHCP is turned off
+                          rule: '!has(self.addressesFromPools) || size(self.addressesFromPools)
+                            == 0 || (has(self.nameservers) && size(self.nameservers)
+                            > 0)'
                       providerID:
                         description: providerID is the Node provider ID, hyperv://<vm-guid>.
                           The controller sets it.
@@ -128,6 +226,14 @@ spec:
                           for this machine.
                         maxLength: 256
                         type: string
+                      vlanID:
+                        description: |-
+                          vlanID overrides HyperVCluster.spec.vlanID when it is not zero.
+                          0 inherits the cluster value.
+                        format: int32
+                        maximum: 4094
+                        minimum: 0
+                        type: integer
                     type: object
                 required:
                 - spec

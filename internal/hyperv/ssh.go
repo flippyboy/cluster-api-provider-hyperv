@@ -3,6 +3,8 @@ package hyperv
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -42,6 +44,11 @@ func dialSSH(ctx context.Context, cfg HostConfig) (*sshSession, error) {
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: hostKey,
 		Timeout:         sshDialTimeout,
+	}
+	if !cfg.InsecureSkipHostKey {
+		// Without this the server may present a key type that is not in
+		// ssh-known-hosts, and knownhosts reports that as a key mismatch.
+		sshConfig.HostKeyAlgorithms = knownHostKeyAlgorithms(hostKey, addr)
 	}
 	dialer := net.Dialer{Timeout: sshDialTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
@@ -110,6 +117,47 @@ func hostKeyCallback(known []byte, skip bool) (ssh.HostKeyCallback, error) {
 		return nil, fmt.Errorf("parse ssh-known-hosts: %w", err)
 	}
 	return cb, nil
+}
+
+// knownHostKeyAlgorithms returns the host key algorithms that ssh-known-hosts
+// lists for addr, in file order. It returns nil when there are none, which
+// keeps the library defaults.
+func knownHostKeyAlgorithms(cb ssh.HostKeyCallback, addr string) []string {
+	// A probe key that is not in the file makes knownhosts return the
+	// keys it does have for this host.
+	_, probe, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil
+	}
+	signer, err := ssh.NewSignerFromKey(probe)
+	if err != nil {
+		return nil
+	}
+	remote := &net.TCPAddr{IP: net.ParseIP("0.0.0.0")}
+	var keyErr *knownhosts.KeyError
+	if !errors.As(cb(addr, remote, signer.PublicKey()), &keyErr) {
+		return nil
+	}
+	var algos []string
+	seen := map[string]bool{}
+	add := func(a string) {
+		if !seen[a] {
+			seen[a] = true
+			algos = append(algos, a)
+		}
+	}
+	for _, k := range keyErr.Want {
+		switch t := k.Key.Type(); t {
+		case ssh.KeyAlgoRSA:
+			// An ssh-rsa key can sign with SHA-2. Prefer those.
+			add(ssh.KeyAlgoRSASHA512)
+			add(ssh.KeyAlgoRSASHA256)
+			add(ssh.KeyAlgoRSA)
+		default:
+			add(t)
+		}
+	}
+	return algos
 }
 
 func (s *sshSession) Exec(ctx context.Context, command string, stdin []byte) ([]byte, []byte, int, error) {

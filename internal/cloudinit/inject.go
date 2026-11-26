@@ -36,8 +36,7 @@ func InjectProviderID(userData []byte, providerID string) ([]byte, error) {
 	if strings.TrimSpace(providerID) == "" {
 		return nil, fmt.Errorf("provider id is empty")
 	}
-	trimmed := bytes.TrimSpace(userData)
-	if !bytes.HasPrefix(trimmed, []byte("#cloud-config")) {
+	if !isCloudConfig(userData) {
 		return nil, &InvalidBootstrapError{Detail: "missing #cloud-config header"}
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(userData))
@@ -206,6 +205,24 @@ func patchArgList(seq *yaml.Node, providerID string) error {
 		},
 	})
 	return nil
+}
+
+// isCloudConfig accepts plain cloud-config and the kubeadm header
+// "## template: jinja" that Cluster API writes in front of it.
+func isCloudConfig(data []byte) bool {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.HasPrefix(trimmed, []byte("#cloud-config")) {
+		return true
+	}
+	line, rest, found := bytes.Cut(trimmed, []byte("\n"))
+	if !found {
+		return false
+	}
+	if !bytes.Equal(bytes.TrimSpace(line), []byte("## template: jinja")) {
+		return false
+	}
+	rest = bytes.TrimSpace(rest)
+	return bytes.HasPrefix(rest, []byte("#cloud-config"))
 }
 
 func mappingOf(n *yaml.Node) *yaml.Node {
