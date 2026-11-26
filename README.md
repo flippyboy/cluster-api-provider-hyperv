@@ -129,11 +129,15 @@ The controller does not log private keys or passwords.
 
 The default disk is a differencing VHDX whose parent is that image. The parent must stay immutable. The controller never deletes it, and VM deletion refuses to remove the directory that contains it. Set `spec.disk.cloneMode` to `Copy` for a full copy. Optional `spec.disk.sizeGiB` grows the disk with `Resize-VHD` when the requested size is larger. Disks are never shrunk.
 
+`spec.dataDisks` adds extra blank dynamically expanding VHDX files. Each file is `data-<name>.vhdx` in the VM directory. A disk is created when it is missing and grown when `sizeGiB` is larger. It is never shrunk or deleted, and the provider does not format or mount it in the guest. The system disk stays `spec.disk`.
+
 A machine may override `imagePath` and `virtualSwitch`.
+
+`spec.vlanID` on the cluster is the access VLAN for every machine NIC on `virtualSwitch`. `0` leaves the adapter untagged. A machine `spec.vlanID` overrides the cluster value when it is not zero. An existing VM keeps its CPU, memory, MAC, and virtual switch; the access VLAN is still applied. `HYPERV_VLAN_ID` sets the cluster field and defaults to `0`.
 
 ## Control plane endpoint
 
-Every guest uses DHCP. You set `Cluster.spec.controlPlaneEndpoint` yourself. The provider does not allocate that address. Use a DHCP reservation, an external load balancer, or `spec.kubeVIP` below.
+Guests use DHCP unless their machine template sets `spec.network.addressesFromPools` (see [Static addresses from IPAM](#static-addresses-from-ipam)). You set `Cluster.spec.controlPlaneEndpoint` yourself. The provider does not allocate that address. Use a DHCP reservation, an external load balancer, or `spec.kubeVIP` below.
 
 The `HyperVCluster` becomes provisioned after the host probe succeeds and the endpoint host and port are both set. The provider does not wait for the endpoint to answer. A later host failure sets `Ready` to False and leaves `provisioned` set.
 
@@ -150,6 +154,47 @@ The image defaults to `ghcr.io/kube-vip/kube-vip:v1.3.0`. On the first control p
 The controller waits to mark a machine provisioned until Hyper-V integration services report a non-link-local IPv4 address. `providerID` is `hyperv://<vm-guid>`. It is injected into the kubeadm `InitConfiguration` or `JoinConfiguration` before the VM starts, for kubeadm v1beta3 maps and v1beta4 name/value lists. The kubelet is not configured with `cloud-provider: external`. There is no Hyper-V cloud provider.
 
 MAC addresses are assigned by the controller and matched in the NoCloud netplan (`dhcp4: true`). An existing VM keeps its CPU, memory, and MAC.
+
+### Static addresses from IPAM
+
+kubeadm writes each control plane node's IP into etcd, the API server flags, and the certificates. If a DHCP lease changes, for example after a long host outage, etcd cannot start. Give control plane machines fixed addresses, either with DHCP reservations for their MACs or with the Cluster API [IPAM contract](https://cluster-api.sigs.k8s.io/reference/api/ipam).
+
+Install an IPAM provider, such as the in-cluster one, and create a pool. Keep the pool range out of the DHCP scope.
+
+```sh
+clusterctl init --ipam in-cluster
+```
+
+```yaml
+apiVersion: ipam.cluster.x-k8s.io/v1alpha2
+kind: InClusterIPPool
+metadata:
+  name: vlan60
+spec:
+  addresses:
+  - 10.16.60.140-10.16.60.199
+  prefix: 24
+  gateway: 10.16.60.1
+```
+
+Reference the pool from the machine template:
+
+```yaml
+spec:
+  template:
+    spec:
+      network:
+        addressesFromPools:
+        - apiGroup: ipam.cluster.x-k8s.io
+          kind: InClusterIPPool
+          name: vlan60
+        nameservers: [10.16.60.1]
+        searchDomains: [lab.example]
+```
+
+For each pool the controller creates an `IPAddressClaim` named `<hypervmachine>-<index>`, owned by the HyperVMachine, and waits (`WaitingForIPAddressClaim`) until the IPAM provider binds it. Nothing is created on the host before that. The NoCloud netplan then sets those addresses, a default route through each family's gateway, and the nameservers, with DHCP off. `nameservers` is required, because DHCP no longer supplies DNS. The allocated addresses become the Machine's `InternalIP`. Claims are deleted by garbage collection after the finalizer has removed the VM, so an address is not reused while the old VM still holds it.
+
+Changing `network` on a template only affects machines created after the change. Roll the control plane and workers to apply it to existing machines.
 
 ## Create a workload cluster
 
@@ -177,6 +222,7 @@ clusterctl substitutes the variables below from the environment. The credentials
 | `HYPERV_WINRM_SCHEME` | `HTTPS` (default) or `HTTP` |
 | `HYPERV_CREDENTIALS_SECRET` | Secret name in the cluster namespace |
 | `HYPERV_VIRTUAL_SWITCH` | Existing external switch |
+| `HYPERV_VLAN_ID` | Access VLAN on machine NICs, default `0` (untagged) |
 | `HYPERV_IMAGE_PATH` | Golden VHDX path on the host |
 | `HYPERV_VCPUS` | vCPU count for control plane and workers, default `2` |
 | `HYPERV_MEMORY_MIB` | Static memory in MiB for both, default `2048` |
@@ -187,4 +233,4 @@ VM names are `capi-<cluster>-<machine>`, sanitized and truncated to 100 characte
 
 ## Out of scope
 
-One host only. No failover cluster, SCVMM, live migration, Windows guests, ClusterClass, MachinePool, load balancer, static IPAM, snapshots, CPU or memory resize after create, GPU, or image build.
+One host only. No failover cluster, SCVMM, live migration, Windows guests, ClusterClass, MachinePool, load balancer, snapshots, CPU or memory resize after create, GPU, or image build.

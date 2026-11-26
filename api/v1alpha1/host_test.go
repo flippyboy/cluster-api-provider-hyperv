@@ -23,6 +23,18 @@ func TestEffectivePort(t *testing.T) {
 	}
 }
 
+func TestEffectiveVLAN(t *testing.T) {
+	if got := EffectiveVLAN(0, 0); got != 0 {
+		t.Fatalf("EffectiveVLAN() = %d, want 0", got)
+	}
+	if got := EffectiveVLAN(60, 0); got != 60 {
+		t.Fatalf("EffectiveVLAN() = %d, want 60", got)
+	}
+	if got := EffectiveVLAN(60, 10); got != 10 {
+		t.Fatalf("EffectiveVLAN() = %d, want 10", got)
+	}
+}
+
 func TestNormalizedTransportAndScheme(t *testing.T) {
 	var host HostSpec
 	if host.NormalizedTransport() != TransportSSH {

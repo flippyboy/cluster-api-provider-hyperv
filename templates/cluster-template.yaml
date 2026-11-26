@@ -39,6 +39,7 @@ spec:
   credentialsSecretRef:
     name: ${HYPERV_CREDENTIALS_SECRET}
   virtualSwitch: ${HYPERV_VIRTUAL_SWITCH}
+  vlanID: ${HYPERV_VLAN_ID:=0}
   imagePath: ${HYPERV_IMAGE_PATH}
   kubeVIP:
     enabled: ${HYPERV_KUBE_VIP:=false}

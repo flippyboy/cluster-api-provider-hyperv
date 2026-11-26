@@ -50,6 +50,22 @@ func (d DiskSpec) NormalizedCloneMode() DiskCloneMode {
 	return d.CloneMode
 }
 
+// DataDiskSpec is one extra blank disk on a VM.
+type DataDiskSpec struct {
+	// name is the disk name. The VHDX file is data-<name>.vhdx in the VM directory.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// sizeGiB is the virtual size in GiB.
+	// +required
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65536
+	SizeGiB int32 `json:"sizeGiB"`
+}
+
 // HyperVMachineSpec defines the desired state of HyperVMachine.
 type HyperVMachineSpec struct {
 	// providerID is the Node provider ID, hyperv://<vm-guid>. The controller sets it.
@@ -79,6 +95,80 @@ type HyperVMachineSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=256
 	VirtualSwitch string `json:"virtualSwitch,omitempty"`
+
+	// vlanID overrides HyperVCluster.spec.vlanID when it is not zero.
+	// 0 inherits the cluster value.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4094
+	VLANID int32 `json:"vlanID,omitempty"`
+
+	// dataDisks are extra blank dynamically expanding VHDX files.
+	// The system disk stays spec.disk. Disks are created when missing,
+	// grown when sizeGiB is larger, and never shrunk or removed.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=16
+	DataDisks []DataDiskSpec `json:"dataDisks,omitempty"`
+
+	// network configures the guest NIC. When it is empty the guest uses DHCP.
+	// +optional
+	Network NetworkSpec `json:"network,omitempty,omitzero"`
+}
+
+// NetworkSpec configures the guest NIC.
+// +kubebuilder:validation:XValidation:rule="!has(self.addressesFromPools) || size(self.addressesFromPools) == 0 || (has(self.nameservers) && size(self.nameservers) > 0)",message="nameservers is required when addressesFromPools is set, because DHCP is turned off"
+type NetworkSpec struct {
+	// addressesFromPools claims one address from each pool through the
+	// Cluster API IPAM contract. The NIC is then configured statically with
+	// those addresses and the gateway each IPAddress reports, and DHCP is off.
+	// The claims are released after the VM is deleted.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=4
+	AddressesFromPools []IPPoolReference `json:"addressesFromPools,omitempty"`
+
+	// nameservers are the DNS servers for a static configuration.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:items:MaxLength=45
+	// +kubebuilder:validation:XValidation:rule="self.all(x, isIP(x))",message="each nameserver must be an IP address"
+	Nameservers []string `json:"nameservers,omitempty"`
+
+	// searchDomains are the DNS search domains for a static configuration.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:items:MaxLength=253
+	SearchDomains []string `json:"searchDomains,omitempty"`
+}
+
+// IPPoolReference points at an IPAM pool, for example an InClusterIPPool.
+type IPPoolReference struct {
+	// apiGroup is the pool API group, for example ipam.cluster.x-k8s.io.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	APIGroup string `json:"apiGroup"`
+
+	// kind is the pool kind, for example InClusterIPPool or GlobalInClusterIPPool.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Kind string `json:"kind"`
+
+	// name is the pool name. A namespaced pool must be in the machine's namespace.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+}
+
+// UsesIPAM reports whether the machine gets static addresses from IPAM pools.
+func (n NetworkSpec) UsesIPAM() bool {
+	return len(n.AddressesFromPools) > 0
 }
 
 // EffectiveVCPUs returns the CPU count, defaulting when unset.
@@ -95,6 +185,15 @@ func (s HyperVMachineSpec) EffectiveMemoryMiB() int32 {
 		return 2048
 	}
 	return s.MemoryMiB
+}
+
+// EffectiveVLAN returns the machine VLAN when set, otherwise the cluster VLAN.
+// 0 means untagged.
+func EffectiveVLAN(clusterVLAN, machineVLAN int32) int32 {
+	if machineVLAN != 0 {
+		return machineVLAN
+	}
+	return clusterVLAN
 }
 
 // HyperVMachineInitializationStatus reports contract initialization.

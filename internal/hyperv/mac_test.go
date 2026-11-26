@@ -30,6 +30,15 @@ func TestRandomMACIsLocalUnicast(t *testing.T) {
 	}
 }
 
+func TestIsZeroMAC(t *testing.T) {
+	if !IsZeroMAC("") || !IsZeroMAC("00:00:00:00:00:00") || !IsZeroMAC("000000000000") {
+		t.Fatal("zero")
+	}
+	if IsZeroMAC("00:15:5d:aa:bb:cc") {
+		t.Fatal("real mac")
+	}
+}
+
 func TestColonMAC(t *testing.T) {
 	got, err := ColonMAC("00-15-5D-AA-BB-CC")
 	if err != nil {

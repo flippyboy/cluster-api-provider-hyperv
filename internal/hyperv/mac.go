@@ -34,6 +34,16 @@ func ColonMAC(mac string) (string, error) {
 	return b.String(), nil
 }
 
+// IsZeroMAC reports an empty, invalid, or all-zero address.
+// A new Hyper-V adapter reports 000000000000 until a static MAC is set.
+func IsZeroMAC(mac string) bool {
+	raw, err := rawMAC(mac)
+	if err != nil {
+		return true
+	}
+	return strings.Trim(raw, "0") == ""
+}
+
 // HyperVMAC returns the 12 uppercase hex digits Set-VMNetworkAdapter accepts.
 func HyperVMAC(mac string) (string, error) {
 	raw, err := rawMAC(mac)

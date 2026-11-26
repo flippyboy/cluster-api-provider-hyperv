@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/flippyboy/cluster-api-provider-hyperv/api/v1alpha1"
+	"github.com/flippyboy/cluster-api-provider-hyperv/internal/cloudinit"
 	"github.com/flippyboy/cluster-api-provider-hyperv/internal/hyperv"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
@@ -112,6 +113,166 @@ func TestMachineRecordsCloneMode(t *testing.T) {
 	}
 }
 
+func TestMachineSendsClusterVLAN(t *testing.T) {
+	ctx := testContext()
+	hvCluster := testHyperVCluster(infrav1.TransportSSH, "")
+	hvCluster.Spec.VLANID = 60
+	c := testClient(
+		testOwnerCluster(true),
+		hvCluster,
+		testOwnerMachine(),
+		testHyperVMachine(),
+		sshSecret(),
+		bootstrapSecret(validBootstrap()),
+	)
+	if err := markClusterProvisioned(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	session := &hyperv.FakeSession{Respond: hostResponder(true)}
+	if _, err := machineReconciler(c, session).Reconcile(ctx, machineRequest()); err != nil {
+		t.Fatal(err)
+	}
+	assertEnsureVMVLAN(t, session, 60)
+}
+
+func TestMachineVLANOverridesCluster(t *testing.T) {
+	ctx := testContext()
+	hvCluster := testHyperVCluster(infrav1.TransportSSH, "")
+	hvCluster.Spec.VLANID = 60
+	hvMachine := testHyperVMachine()
+	hvMachine.Spec.VLANID = 10
+	c := testClient(
+		testOwnerCluster(true),
+		hvCluster,
+		testOwnerMachine(),
+		hvMachine,
+		sshSecret(),
+		bootstrapSecret(validBootstrap()),
+	)
+	if err := markClusterProvisioned(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	session := &hyperv.FakeSession{Respond: hostResponder(true)}
+	if _, err := machineReconciler(c, session).Reconcile(ctx, machineRequest()); err != nil {
+		t.Fatal(err)
+	}
+	assertEnsureVMVLAN(t, session, 10)
+}
+
+func TestMachineDataDisks(t *testing.T) {
+	t.Run("one disk", func(t *testing.T) {
+		ctx := testContext()
+		hvMachine := testHyperVMachine()
+		hvMachine.Spec.DataDisks = []infrav1.DataDiskSpec{{Name: "data", SizeGiB: 100}}
+		c := testClient(
+			testOwnerCluster(true),
+			testHyperVCluster(infrav1.TransportSSH, ""),
+			testOwnerMachine(),
+			hvMachine,
+			sshSecret(),
+			bootstrapSecret(validBootstrap()),
+		)
+		if err := markClusterProvisioned(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		session := &hyperv.FakeSession{Respond: func(name string, params json.RawMessage) ([]byte, []byte, int, error) {
+			if name == "ensure-data-disks" {
+				var in struct {
+					Disks []struct {
+						Name    string `json:"name"`
+						SizeGiB int32  `json:"sizeGiB"`
+					} `json:"disks"`
+				}
+				if err := json.Unmarshal(params, &in); err != nil {
+					t.Fatal(err)
+				}
+				if len(in.Disks) != 1 || in.Disks[0].Name != "data" || in.Disks[0].SizeGiB != 100 {
+					t.Fatalf("data disk params %s", params)
+				}
+				return []byte(`{"disks":[{"name":"data","diskPath":"C:\\VMs\\vm\\data-data.vhdx","sizeGiB":100}]}`), nil, 0, nil
+			}
+			return hostResponder(true)(name, params)
+		}}
+		if _, err := machineReconciler(c, session).Reconcile(ctx, machineRequest()); err != nil {
+			t.Fatal(err)
+		}
+		diskCall, diskOK := callNamed(session.Calls(), "ensure-disk")
+		dataCall, dataOK := callNamed(session.Calls(), "ensure-data-disks")
+		if !diskOK || !dataOK {
+			t.Fatalf("ensure-disk=%v ensure-data-disks=%v", diskOK, dataOK)
+		}
+		diskAt, dataAt := -1, -1
+		for i, call := range session.Calls() {
+			if call.Name == "ensure-disk" && diskAt < 0 {
+				diskAt = i
+			}
+			if call.Name == "ensure-data-disks" && dataAt < 0 {
+				dataAt = i
+			}
+		}
+		if dataAt < diskAt {
+			t.Fatalf("ensure-data-disks ran before ensure-disk (%d < %d)", dataAt, diskAt)
+		}
+		var params struct {
+			VMName string `json:"vmName"`
+			Disks  []struct {
+				Name    string `json:"name"`
+				SizeGiB int32  `json:"sizeGiB"`
+			} `json:"disks"`
+		}
+		if err := json.Unmarshal(dataCall.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.VMName != "capi-demo-demo-cp-0" || len(params.Disks) != 1 || params.Disks[0].Name != "data" || params.Disks[0].SizeGiB != 100 {
+			t.Fatalf("data disks = %#v", params)
+		}
+		if diskCall.Name != "ensure-disk" {
+			t.Fatal(diskCall.Name)
+		}
+	})
+	t.Run("empty", func(t *testing.T) {
+		ctx := testContext()
+		c := testClient(
+			testOwnerCluster(true),
+			testHyperVCluster(infrav1.TransportSSH, ""),
+			testOwnerMachine(),
+			testHyperVMachine(),
+			sshSecret(),
+			bootstrapSecret(validBootstrap()),
+		)
+		if err := markClusterProvisioned(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		session := &hyperv.FakeSession{Respond: hostResponder(true)}
+		if _, err := machineReconciler(c, session).Reconcile(ctx, machineRequest()); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := callNamed(session.Calls(), "ensure-data-disks"); ok {
+			t.Fatal("ensure-data-disks was called with no data disks")
+		}
+		if _, ok := callNamed(session.Calls(), "ensure-disk"); !ok {
+			t.Fatal("ensure-disk was not called")
+		}
+	})
+}
+
+func assertEnsureVMVLAN(t *testing.T, session *hyperv.FakeSession, want int32) {
+	t.Helper()
+	call, ok := callNamed(session.Calls(), "ensure-vm")
+	if !ok {
+		t.Fatal("ensure-vm was not called")
+	}
+	var params struct {
+		VLANID int32 `json:"vlanID"`
+	}
+	if err := json.Unmarshal(call.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params.VLANID != want || !strings.Contains(string(call.Params), `"vlanID":`) {
+		t.Fatalf("vlan params = %s", call.Params)
+	}
+}
+
 func TestMachineWinRMUploadIsChunked(t *testing.T) {
 	ctx := testContext()
 	c := testClient(
@@ -158,7 +319,121 @@ func TestMachineWinRMUploadIsChunked(t *testing.T) {
 	if params.Offset != 0 || params.Data == "" || !strings.HasSuffix(params.Path, `\cidata.iso`) {
 		t.Fatalf("chunk = %#v", params)
 	}
+	sawRead := false
+	sawRelease := false
+	for _, call := range session.Calls() {
+		switch call.Name {
+		case "read-text":
+			sawRead = true
+		case "release-iso":
+			if !sawRead {
+				t.Fatal("release-iso ran before read-text")
+			}
+			sawRelease = true
+		case "write-chunk":
+			if !sawRelease {
+				t.Fatal("write-chunk ran before release-iso")
+			}
+		}
+	}
+	if !sawRead {
+		t.Fatal("read-text was not called")
+	}
 	assertReady(t, getMachine(t, c), infrav1.WaitingForIPReason)
+}
+
+func TestMachineEjectsISOBeforeRewrite(t *testing.T) {
+	session := reconcileISOHash(t, `{"exists":true,"text":"deadbeef"}`)
+	sawRelease := false
+	for _, call := range session.Calls() {
+		switch call.Name {
+		case "release-iso":
+			sawRelease = true
+		case "write-chunk":
+			if !sawRelease {
+				t.Fatal("write-chunk ran before release-iso")
+			}
+			return
+		}
+	}
+	t.Fatal("write-chunk was not called")
+}
+
+func TestMachineSkipsISORewriteWhenUnchanged(t *testing.T) {
+	providerID, err := hyperv.ProviderID(testVMID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userData, err := cloudinit.InjectProviderID([]byte(validBootstrap()), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac, err := hyperv.ColonMAC("00155DAABBCC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := isoDigest(userData, cloudinit.MetaData(testVMID, testMachine), cloudinit.NetworkConfig(mac))
+	session := reconcileISOHash(t, `{"exists":true,"text":"`+digest+`"}`)
+	for _, call := range session.Calls() {
+		if call.Name == "release-iso" || call.Name == "write-chunk" {
+			t.Fatalf("unchanged iso called %s", call.Name)
+		}
+	}
+	if _, ok := callNamed(session.Calls(), "ensure-iso"); !ok {
+		t.Fatal("ensure-iso was not called")
+	}
+}
+
+func reconcileISOHash(t *testing.T, hashJSON string) *hyperv.FakeSession {
+	t.Helper()
+	ctx := testContext()
+	c := testClient(
+		testOwnerCluster(true),
+		testHyperVCluster(infrav1.TransportWinRM, infrav1.WinRMSchemeHTTPS),
+		testOwnerMachine(),
+		testHyperVMachine(),
+		winrmSecret("s3cret"),
+		bootstrapSecret(validBootstrap()),
+	)
+	if err := markClusterProvisioned(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	session := &hyperv.FakeSession{Respond: func(name string, params json.RawMessage) ([]byte, []byte, int, error) {
+		if name == "read-text" {
+			return []byte(hashJSON), nil, 0, nil
+		}
+		return hostResponder(false)(name, params)
+	}}
+	r := &HyperVMachineReconciler{
+		Client: c,
+		Dial: func(_ context.Context, cfg hyperv.HostConfig) (*hyperv.Client, error) {
+			return hyperv.NewClient(session, cfg.Transport), nil
+		},
+	}
+	if _, err := r.Reconcile(ctx, machineRequest()); err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+func isoUpload(t *testing.T, session *hyperv.FakeSession) []byte {
+	t.Helper()
+	var iso []byte
+	sides := 0
+	for _, up := range session.Uploads() {
+		switch {
+		case strings.HasSuffix(up.Path, `\cidata.iso`):
+			iso = up.Data
+		case strings.HasSuffix(up.Path, `\cidata.iso.sha256`):
+			sides++
+		default:
+			t.Fatalf("unexpected upload %s", up.Path)
+		}
+	}
+	if iso == nil || sides != 1 {
+		t.Fatalf("iso uploads = %d sidecar = %d", len(session.Uploads())-sides, sides)
+	}
+	return iso
 }
 
 func TestMachineKubeVIPOnlyOnControlPlane(t *testing.T) {
@@ -167,10 +442,7 @@ func TestMachineKubeVIPOnlyOnControlPlane(t *testing.T) {
 		if _, ok := callNamed(session.Calls(), "start"); !ok {
 			t.Fatal("control plane vm was not started")
 		}
-		if len(session.Uploads()) != 1 {
-			t.Fatalf("uploads = %d", len(session.Uploads()))
-		}
-		body := string(session.Uploads()[0].Data)
+		body := string(isoUpload(t, session))
 		for _, want := range []string{"kube-vip", "10.0.0.10", "set-name: eth0", "svc_enable", "super-admin.conf"} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("iso missing %q", want)
@@ -179,7 +451,7 @@ func TestMachineKubeVIPOnlyOnControlPlane(t *testing.T) {
 	})
 	t.Run("worker", func(t *testing.T) {
 		session, _ := reconcileKubeVIP(t, false, "eth0")
-		body := string(session.Uploads()[0].Data)
+		body := string(isoUpload(t, session))
 		if strings.Contains(body, "kube-vip") || strings.Contains(body, "set-name:") {
 			t.Fatal("worker cloud-init included kube-vip")
 		}

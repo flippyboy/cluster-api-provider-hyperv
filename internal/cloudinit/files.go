@@ -17,8 +17,7 @@ func AddWriteFile(userData []byte, path, content string) ([]byte, error) {
 	if path == "" {
 		return nil, fmt.Errorf("write_files path is empty")
 	}
-	trimmed := bytes.TrimSpace(userData)
-	if !bytes.HasPrefix(trimmed, []byte("#cloud-config")) {
+	if !isCloudConfig(userData) {
 		return nil, &InvalidBootstrapError{Detail: "missing #cloud-config header"}
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(userData))

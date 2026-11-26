@@ -18,6 +18,7 @@ import (
 	infrav1 "github.com/flippyboy/cluster-api-provider-hyperv/api/v1alpha1"
 	"github.com/flippyboy/cluster-api-provider-hyperv/internal/hyperv"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
 )
 
@@ -37,6 +38,7 @@ func testScheme() *runtime.Scheme {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = clusterv1.AddToScheme(scheme)
 	_ = infrav1.AddToScheme(scheme)
+	_ = ipamv1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	return scheme
 }
@@ -44,7 +46,7 @@ func testScheme() *runtime.Scheme {
 func testClient(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(testScheme()).
-		WithStatusSubresource(&infrav1.HyperVCluster{}, &infrav1.HyperVMachine{}).
+		WithStatusSubresource(&infrav1.HyperVCluster{}, &infrav1.HyperVMachine{}, &ipamv1.IPAddressClaim{}).
 		WithObjects(objs...).
 		Build()
 }

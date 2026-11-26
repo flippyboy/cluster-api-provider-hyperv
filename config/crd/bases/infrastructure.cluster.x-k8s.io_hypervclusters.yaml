@@ -167,6 +167,14 @@ spec:
                 maxLength: 256
                 minLength: 1
                 type: string
+              vlanID:
+                description: |-
+                  vlanID is the access VLAN for every machine NIC on virtualSwitch.
+                  0 leaves the adapter untagged. A machine can override this with its own vlanID.
+                format: int32
+                maximum: 4094
+                minimum: 0
+                type: integer
               vmPath:
                 description: |-
                   vmPath is the directory under which each VM folder is created. When

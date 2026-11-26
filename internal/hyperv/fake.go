@@ -2,6 +2,7 @@ package hyperv
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"sync"
 )
@@ -49,6 +50,21 @@ func (f *FakeSession) Uploads() []UploadRecord {
 	return out
 }
 
+// stdinPayload strips the little-endian length prefix added by frameStdin.
+// A bare JSON object is left unchanged so older callers still parse.
+// The prefix is recognized only when its length field equals the remaining
+// bytes. A low length byte of '{' (a 2171-byte envelope is 7b 08 00 00)
+// is still a prefix: skipping it fed ConvertFrom-Json {\u0008\u0000\u0000{.
+func stdinPayload(stdin []byte) []byte {
+	if len(stdin) >= 4 {
+		n := binary.LittleEndian.Uint32(stdin[:4])
+		if n > 0 && int(n) == len(stdin)-4 {
+			return stdin[4:]
+		}
+	}
+	return stdin
+}
+
 // Exec parses the JSON envelope on stdin and records the script name.
 func (f *FakeSession) Exec(ctx context.Context, _ string, stdin []byte) ([]byte, []byte, int, error) {
 	if err := ctx.Err(); err != nil {
@@ -58,7 +74,7 @@ func (f *FakeSession) Exec(ctx context.Context, _ string, stdin []byte) ([]byte,
 		Name   string          `json:"name"`
 		Params json.RawMessage `json:"params"`
 	}
-	if err := json.Unmarshal(stdin, &env); err != nil {
+	if err := json.Unmarshal(stdinPayload(stdin), &env); err != nil {
 		return nil, nil, 1, err
 	}
 	params := append([]byte(nil), env.Params...)

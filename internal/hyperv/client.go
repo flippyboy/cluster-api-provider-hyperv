@@ -72,7 +72,7 @@ func (c *Client) execScript(ctx context.Context, name string, params any, out an
 	}
 	ctx, cancel := context.WithTimeout(ctx, scriptTimeout)
 	defer cancel()
-	stdout, stderr, code, err := c.session.Exec(ctx, powershellCommand(), payload)
+	stdout, stderr, code, err := c.session.Exec(ctx, powershellCommand(), frameStdin(payload))
 	if err != nil {
 		return fmt.Errorf("run %s: %w", name, err)
 	}
@@ -147,7 +147,8 @@ func (c *Client) Probe(ctx context.Context, virtualSwitch, imagePath string) (Pr
 	}, nil
 }
 
-// VMInput is the desired shape of a new VM. An existing VM is left unchanged.
+// VMInput is the desired shape of a new VM.
+// An existing VM keeps its CPU, memory, MAC, and switch. The access VLAN is applied either way.
 type VMInput struct {
 	Name          string
 	VMPath        string
@@ -155,6 +156,7 @@ type VMInput struct {
 	VCPUs         int32
 	VirtualSwitch string
 	MACAddress    string
+	VLANID        int32 `json:"vlanID"`
 }
 
 // VMResult is the VM Hyper-V reported.
@@ -173,6 +175,7 @@ type ensureVMParams struct {
 	VCPUs         int32  `json:"vCPUs"`
 	VirtualSwitch string `json:"virtualSwitch"`
 	MACAddress    string `json:"macAddress"`
+	VLANID        int32  `json:"vlanID"`
 }
 
 type vmJSON struct {
@@ -198,6 +201,7 @@ func (c *Client) EnsureVM(ctx context.Context, in VMInput) (VMResult, error) {
 		VCPUs:         in.VCPUs,
 		VirtualSwitch: in.VirtualSwitch,
 		MACAddress:    mac,
+		VLANID:        in.VLANID,
 	}, &raw)
 	if err != nil {
 		return VMResult{}, err
@@ -261,6 +265,69 @@ func (c *Client) EnsureDisk(ctx context.Context, in DiskInput) (DiskResult, erro
 	return DiskResult{DiskPath: raw.DiskPath, CloneMode: raw.CloneMode}, nil
 }
 
+// DataDisk is one extra blank dynamically expanding VHDX.
+type DataDisk struct {
+	Name    string
+	SizeGiB int32
+}
+
+// DataDiskResult is one extra disk Hyper-V reported.
+type DataDiskResult struct {
+	Name     string
+	DiskPath string
+	SizeGiB  int32
+}
+
+// DataDisksResult is the extra disks Hyper-V reported.
+type DataDisksResult struct {
+	Disks []DataDiskResult
+}
+
+type dataDiskParam struct {
+	Name    string `json:"name"`
+	SizeGiB int32  `json:"sizeGiB"`
+}
+
+type ensureDataDisksParams struct {
+	VMName string          `json:"vmName"`
+	Disks  []dataDiskParam `json:"disks"`
+}
+
+type dataDiskJSON struct {
+	Name     string `json:"name"`
+	DiskPath string `json:"diskPath"`
+	SizeGiB  int32  `json:"sizeGiB"`
+}
+
+type dataDisksJSON struct {
+	Disks []dataDiskJSON `json:"disks"`
+}
+
+// EnsureDataDisks creates missing blank VHDX files, attaches them, and grows them.
+// Disks are never shrunk or deleted.
+func (c *Client) EnsureDataDisks(ctx context.Context, vmName string, disks []DataDisk) (DataDisksResult, error) {
+	params := ensureDataDisksParams{
+		VMName: vmName,
+		Disks:  make([]dataDiskParam, 0, len(disks)),
+	}
+	for _, disk := range disks {
+		params.Disks = append(params.Disks, dataDiskParam{Name: disk.Name, SizeGiB: disk.SizeGiB})
+	}
+	var raw dataDisksJSON
+	if err := c.execScript(ctx, "ensure-data-disks", params, &raw); err != nil {
+		return DataDisksResult{}, err
+	}
+	out := DataDisksResult{Disks: make([]DataDiskResult, 0, len(raw.Disks))}
+	for _, disk := range raw.Disks {
+		out.Disks = append(out.Disks, DataDiskResult{
+			Name:     disk.Name,
+			DiskPath: disk.DiskPath,
+			SizeGiB:  disk.SizeGiB,
+		})
+	}
+	return out, nil
+}
+
 // ISOResult reports where the NoCloud ISO was attached.
 type ISOResult struct {
 	ISOPath      string
@@ -284,6 +351,37 @@ func (c *Client) EnsureISO(ctx context.Context, vmName, isoPath string) (ISOResu
 		return ISOResult{}, err
 	}
 	return ISOResult{ISOPath: raw.ISOPath, NeedsRestart: raw.NeedsRestart}, nil
+}
+
+type pathParams struct {
+	Path string `json:"path"`
+}
+
+// TextFile is the trimmed contents of a small remote file.
+type TextFile struct {
+	Exists bool
+	Text   string
+}
+
+type textFileJSON struct {
+	Exists bool   `json:"exists"`
+	Text   string `json:"text"`
+}
+
+// ReadText reads a small text file such as the cidata digest sidecar.
+// A missing file reports Exists=false. A file that cannot be read reports
+// Exists=true and empty Text.
+func (c *Client) ReadText(ctx context.Context, path string) (TextFile, error) {
+	var raw textFileJSON
+	if err := c.execScript(ctx, "read-text", pathParams{Path: path}, &raw); err != nil {
+		return TextFile{}, err
+	}
+	return TextFile{Exists: raw.Exists, Text: raw.Text}, nil
+}
+
+// ReleaseISO ejects a DVD that is holding isoPath so the file can be replaced.
+func (c *Client) ReleaseISO(ctx context.Context, vmName, isoPath string) error {
+	return c.execScript(ctx, "release-iso", ensureISOParams{VMName: vmName, ISOPath: isoPath}, nil)
 }
 
 type nameParams struct {

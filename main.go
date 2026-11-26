@@ -18,6 +18,7 @@ import (
 	infrav1 "github.com/flippyboy/cluster-api-provider-hyperv/api/v1alpha1"
 	"github.com/flippyboy/cluster-api-provider-hyperv/internal/controller"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 )
 
 var scheme = runtime.NewScheme()
@@ -26,6 +27,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(clusterv1.AddToScheme(scheme))
 	utilruntime.Must(infrav1.AddToScheme(scheme))
+	utilruntime.Must(ipamv1.AddToScheme(scheme))
 	utilruntime.Must(corev1.AddToScheme(scheme))
 }
 

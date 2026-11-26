@@ -2,7 +2,12 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -20,6 +25,7 @@ import (
 	"github.com/flippyboy/cluster-api-provider-hyperv/internal/hyperv"
 	"github.com/flippyboy/cluster-api-provider-hyperv/internal/kubevip"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	ipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/annotations"
 	"sigs.k8s.io/cluster-api/util/patch"
@@ -164,6 +170,27 @@ func (r *HyperVMachineReconciler) reconcileNormal(ctx context.Context, patchHelp
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
+	// Static addresses must be known before the VM boots, because they go
+	// into the cloud-init network config.
+	var static []cloudinit.StaticAddress
+	if hvMachine.Spec.Network.UsesIPAM() {
+		res, err := reconcileIPAddresses(ctx, r.Client, hvMachine, cluster)
+		if err != nil {
+			var invalid *invalidIPAddressError
+			if errors.As(err, &invalid) {
+				markReady(hvMachine, metav1.ConditionFalse, infrav1.IPAddressInvalidReason, err.Error())
+				return ctrl.Result{RequeueAfter: requeueAfter}, nil
+			}
+			return ctrl.Result{}, err
+		}
+		if res.Pending != "" {
+			markReady(hvMachine, metav1.ConditionFalse, infrav1.WaitingForIPAddressClaimReason,
+				fmt.Sprintf("waiting for IPAddressClaim %s to get an address from its pool", res.Pending))
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+		static = res.Addresses
+	}
+
 	if hvMachine.Status.VMName == "" {
 		hvMachine.Status.VMName = hyperv.VMName(cluster.Name, machine.Name)
 		if err := patchHelper.Patch(ctx, hvMachine); err != nil {
@@ -186,7 +213,7 @@ func (r *HyperVMachineReconciler) reconcileNormal(ctx context.Context, patchHelp
 	defer host.Close()
 
 	mac := hvMachine.Status.MACAddress
-	if mac == "" {
+	if hyperv.IsZeroMAC(mac) {
 		mac, err = hyperv.RandomMAC()
 		if err != nil {
 			return ctrl.Result{}, err
@@ -199,6 +226,7 @@ func (r *HyperVMachineReconciler) reconcileNormal(ctx context.Context, patchHelp
 		VCPUs:         hvMachine.Spec.EffectiveVCPUs(),
 		VirtualSwitch: switchName(hvCluster, hvMachine),
 		MACAddress:    mac,
+		VLANID:        infrav1.EffectiveVLAN(hvCluster.Spec.VLANID, hvMachine.Spec.VLANID),
 	})
 	if err != nil {
 		log.Error(err, "failed to ensure VM")
@@ -219,6 +247,17 @@ func (r *HyperVMachineReconciler) reconcileNormal(ctx context.Context, patchHelp
 		markReady(hvMachine, metav1.ConditionFalse, infrav1.HostCommandFailedReason, err.Error())
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
+	if len(hvMachine.Spec.DataDisks) > 0 {
+		disks := make([]hyperv.DataDisk, 0, len(hvMachine.Spec.DataDisks))
+		for _, disk := range hvMachine.Spec.DataDisks {
+			disks = append(disks, hyperv.DataDisk{Name: disk.Name, SizeGiB: disk.SizeGiB})
+		}
+		if _, err := host.EnsureDataDisks(ctx, vm.VMName, disks); err != nil {
+			log.Error(err, "failed to ensure data disks")
+			markReady(hvMachine, metav1.ConditionFalse, infrav1.HostCommandFailedReason, err.Error())
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+	}
 
 	providerID, err := hyperv.ProviderID(vm.VMID)
 	if err != nil {
@@ -232,15 +271,40 @@ func (r *HyperVMachineReconciler) reconcileNormal(ctx context.Context, patchHelp
 		}
 		return ctrl.Result{}, err
 	}
-	netcfg := cloudinit.NetworkConfig(vm.MACAddress)
+	iface := ""
 	if hvCluster.Spec.KubeVIP.Enabled && isControlPlane(machine) {
-		injected, netcfg, err = injectKubeVIP(injected, vm.MACAddress, cluster, hvCluster)
+		iface = hvCluster.Spec.KubeVIP.EffectiveInterface()
+		injected, err = injectKubeVIP(injected, cluster, hvCluster)
 		if err != nil {
 			markReady(hvMachine, metav1.ConditionFalse, infrav1.KubeVIPConfigInvalidReason, err.Error())
 			return ctrl.Result{RequeueAfter: requeueAfter}, nil
 		}
 	}
-	isoBytes, err := cloudinit.Build(injected, cloudinit.MetaData(vm.VMID, machine.Name), netcfg)
+	var netcfg []byte
+	switch {
+	case len(static) > 0:
+		netcfg, err = cloudinit.StaticNetworkConfig(cloudinit.StaticNetwork{
+			MAC:           vm.MACAddress,
+			Interface:     iface,
+			Addresses:     static,
+			Nameservers:   hvMachine.Spec.Network.Nameservers,
+			SearchDomains: hvMachine.Spec.Network.SearchDomains,
+		})
+		if err != nil {
+			markReady(hvMachine, metav1.ConditionFalse, infrav1.IPAddressInvalidReason, err.Error())
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+	case iface != "":
+		netcfg, err = cloudinit.NetworkConfigNamed(vm.MACAddress, iface)
+		if err != nil {
+			markReady(hvMachine, metav1.ConditionFalse, infrav1.KubeVIPConfigInvalidReason, err.Error())
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+	default:
+		netcfg = cloudinit.NetworkConfig(vm.MACAddress)
+	}
+	meta := cloudinit.MetaData(vm.VMID, machine.Name)
+	isoBytes, err := cloudinit.Build(injected, meta, netcfg)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("build cidata iso: %w", err)
 	}
@@ -249,10 +313,33 @@ func (r *HyperVMachineReconciler) reconcileNormal(ctx context.Context, patchHelp
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	isoPath := hyperv.JoinWin(vm.VMPath, "cidata.iso")
-	if err := host.Upload(ctx, isoPath, isoBytes); err != nil {
-		log.Error(err, "failed to upload cidata iso")
+	digest := isoDigest(injected, meta, netcfg)
+	recorded, err := host.ReadText(ctx, isoPath+".sha256")
+	if err != nil {
+		log.Error(err, "failed to read cidata digest")
 		markReady(hvMachine, metav1.ConditionFalse, infrav1.HostCommandFailedReason, err.Error())
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+	if !isoUnchanged(recorded.Exists, recorded.Text, digest) {
+		// A running DVD keeps the previous ISO open. Eject it, as
+		// taliesins/hyperv does by setting the DVD path to null, then write.
+		// The digest covers the cloud-init inputs. The ISO bytes themselves
+		// include a timestamp, so they are not a stable compare.
+		if err := host.ReleaseISO(ctx, vm.VMName, isoPath); err != nil {
+			log.Error(err, "failed to eject cidata iso")
+			markReady(hvMachine, metav1.ConditionFalse, infrav1.HostCommandFailedReason, err.Error())
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+		if err := host.Upload(ctx, isoPath, isoBytes); err != nil {
+			log.Error(err, "failed to upload cidata iso")
+			markReady(hvMachine, metav1.ConditionFalse, infrav1.HostCommandFailedReason, err.Error())
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+		if err := host.Upload(ctx, isoPath+".sha256", []byte(digest+"\n")); err != nil {
+			log.Error(err, "failed to upload cidata digest")
+			markReady(hvMachine, metav1.ConditionFalse, infrav1.HostCommandFailedReason, err.Error())
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
 	}
 	iso, err := host.EnsureISO(ctx, vm.VMName, isoPath)
 	if err != nil {
@@ -290,6 +377,14 @@ func (r *HyperVMachineReconciler) reconcileNormal(ctx context.Context, patchHelp
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
+	// With IPAM the allocated addresses are authoritative. Integration
+	// services can still report a stale or extra address during boot.
+	if len(static) > 0 {
+		ips = ips[:0]
+		for _, a := range static {
+			ips = append(ips, a.Address)
+		}
+	}
 	hvMachine.Spec.ProviderID = providerID
 	hvMachine.Status.Addresses = machineAddresses(machine.Name, ips)
 	hvMachine.Status.Initialization.Provisioned = ptr.To(true)
@@ -374,10 +469,10 @@ func switchName(cluster *infrav1.HyperVCluster, machine *infrav1.HyperVMachine) 
 	return cluster.Spec.VirtualSwitch
 }
 
-func injectKubeVIP(userData []byte, mac string, cluster *clusterv1.Cluster, hvCluster *infrav1.HyperVCluster) ([]byte, []byte, error) {
+func injectKubeVIP(userData []byte, cluster *clusterv1.Cluster, hvCluster *infrav1.HyperVCluster) ([]byte, error) {
 	endpoint := cluster.Spec.ControlPlaneEndpoint
 	if !endpoint.IsValid() {
-		return nil, nil, fmt.Errorf("Cluster.spec.controlPlaneEndpoint is not set")
+		return nil, fmt.Errorf("Cluster.spec.controlPlaneEndpoint is not set")
 	}
 	spec := hvCluster.Spec.KubeVIP
 	manifest, err := kubevip.Manifest(kubevip.Settings{
@@ -387,17 +482,24 @@ func injectKubeVIP(userData []byte, mac string, cluster *clusterv1.Cluster, hvCl
 		Image:     spec.EffectiveImage(),
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	updated, err := cloudinit.AddWriteFile(userData, "/etc/kubernetes/manifests/kube-vip.yaml", string(manifest))
-	if err != nil {
-		return nil, nil, err
+	return cloudinit.AddWriteFile(userData, "/etc/kubernetes/manifests/kube-vip.yaml", string(manifest))
+}
+
+func isoUnchanged(exists bool, remote, want string) bool {
+	return exists && remote != "" && strings.EqualFold(remote, want)
+}
+
+func isoDigest(parts ...[]byte) string {
+	h := sha256.New()
+	var n [4]byte
+	for _, part := range parts {
+		binary.BigEndian.PutUint32(n[:], uint32(len(part)))
+		h.Write(n[:])
+		h.Write(part)
 	}
-	netcfg, err := cloudinit.NetworkConfigNamed(mac, spec.EffectiveInterface())
-	if err != nil {
-		return nil, nil, err
-	}
-	return updated, netcfg, nil
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func isControlPlane(machine *clusterv1.Machine) bool {
@@ -424,11 +526,24 @@ func machineAddresses(hostname string, ips []string) clusterv1.MachineAddresses 
 
 // SetupWithManager registers the controller.
 func (r *HyperVMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	clusterToMachines, err := util.ClusterToTypedObjectsMapper(mgr.GetClient(), &infrav1.HyperVMachineList{}, mgr.GetScheme())
+	if err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.HyperVMachine{}, builder.WithPredicates(predicates.ResourceIsNotExternallyManaged(mgr.GetScheme(), ctrl.Log))).
 		Watches(
 			&clusterv1.Machine{},
 			handler.EnqueueRequestsFromMapFunc(util.MachineToInfrastructureMapFunc(infrav1.GroupVersion.WithKind("HyperVMachine"))),
 		).
+		// A paused machine returns without a requeue. Without this watch,
+		// unpausing the Cluster never wakes it, and a pending delete stays stuck.
+		Watches(
+			&clusterv1.Cluster{},
+			handler.EnqueueRequestsFromMapFunc(clusterToMachines),
+			builder.WithPredicates(predicates.ClusterPausedTransitionsOrInfrastructureProvisioned(mgr.GetScheme(), ctrl.Log)),
+		).
+		// The IPAM provider binds a claim by updating its status.
+		Owns(&ipamv1.IPAddressClaim{}).
 		Complete(r)
 }
